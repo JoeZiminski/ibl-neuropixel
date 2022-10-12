@@ -573,9 +573,11 @@ def detect_bad_channels(raw, fs, similarity_threshold=(-0.5, 1), psd_hf_threshol
         :return: np.array
         """
         ntap = int(np.ceil(nmed / 2))
-        xf = np.r_[np.zeros(ntap) + np.mean(x), x, np.zeros(ntap) + np.mean(x)]
+        extend = np.zeros(ntap) +  scipy.stats.trim_mean(x, 0.2)  # np.mean(x)
+        xf = np.r_[np.zeros(ntap) + np.median(x[:ntap]), x, np.zeros(ntap) + np.median(x[-ntap:])] # np.r_[np.flip(x[:ntap]), x, np.flip(x[-ntap:])]  # np.r_[extend, x, extend]
         # assert np.all(xcorf[ntap:-ntap] == xcor)
         xf = scipy.signal.medfilt(xf, nmed)[ntap:-ntap]
+
         return x - xf
 
     def channels_similarity(raw, nmed=0):
@@ -628,6 +630,7 @@ def detect_bad_channels(raw, fs, similarity_threshold=(-0.5, 1), psd_hf_threshol
     idead = np.where(similarity_threshold[0] > xfeats['xcor_hf'])[0]
     inoisy = np.where(np.logical_or(xfeats['psd_hf'] > psd_hf_threshold, xfeats['xcor_hf'] > similarity_threshold[1]))[0]
     # the channels outside of the brains are the contiguous channels below the threshold on the trend coherency
+
     ioutside = np.where(xfeats['xcor_lf'] < -0.75)[0]
     if ioutside.size > 0 and ioutside[-1] == (nc - 1):
         a = np.cumsum(np.r_[0, np.diff(ioutside) - 1])
