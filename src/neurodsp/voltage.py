@@ -573,7 +573,7 @@ def detect_bad_channels(raw, fs, similarity_threshold=(-0.5, 1), psd_hf_threshol
         :return: np.array
         """
         ntap = int(np.ceil(nmed / 2))
-        xf = np.r_[np.zeros(ntap) + x[0], x, np.zeros(ntap) + x[-1]]
+        xf = np.r_[np.zeros(ntap) + np.mean(x), x, np.zeros(ntap) + np.mean(x)]
         # assert np.all(xcorf[ntap:-ntap] == xcor)
         xf = scipy.signal.medfilt(xf, nmed)[ntap:-ntap]
         return x - xf
@@ -587,14 +587,16 @@ def detect_bad_channels(raw, fs, similarity_threshold=(-0.5, 1), psd_hf_threshol
         :return:
         """
         def fxcor(x, y):
-            return scipy.fft.irfft(scipy.fft.rfft(x) * np.conj(scipy.fft.rfft(y)), n=raw.shape[-1])
+            return scipy.fft.irfft(scipy.fft.rfft(x) * np.conj(scipy.fft.rfft(y)), n=raw.shape[-1])  # similar to convolution is multipliation in Fourier domain, covariance
+                                                                                                     # is multiplicative with the conjugate, as the conjugate in the
+                                                                                                     # Fourier domain is flip in the time domain.
 
         def nxcor(x, ref):
-            ref = ref - np.mean(ref)
-            apeak = fxcor(ref, ref)[0]
+            ref = ref - np.mean(ref)                                                # remove DC from reference
+            apeak = fxcor(ref, ref)[0]                                              # calculate the variance in the ref
             x = x - np.mean(x, axis=-1)[:, np.newaxis]  # remove DC component
-            return fxcor(x, ref)[:, 0] / apeak
-
+            return fxcor(x, ref)[:, 0] / apeak                                      # calculate the cross correlation (covariance, not standardized)
+                                                                                    # and normalise to the reference variance (returns
         ref = np.median(raw, axis=0)
         xcor = nxcor(raw, ref)
 
@@ -602,9 +604,9 @@ def detect_bad_channels(raw, fs, similarity_threshold=(-0.5, 1), psd_hf_threshol
             xcor = detrend(xcor, nmed) + 1
         return xcor
 
-    nc, _ = raw.shape
-    raw = raw - np.mean(raw, axis=-1)[:, np.newaxis]  # removes DC offset
-    xcor = channels_similarity(raw)
+    nc, _ = raw.shape                                                                                   # get num channels
+    raw = raw - np.mean(raw, axis=-1)[:, np.newaxis]  # removes DC offset                               # subtract mean of each channel ([:, np.newaxis] essentially np.at_least2d here)
+    xcor = channels_similarity(raw)                                                                     #
     fscale, psd = scipy.signal.welch(raw * 1e6, fs=fs)  # units; uV ** 2 / Hz
     if psd_hf_threshold is None:
         # the LFP band data is obviously much stronger so auto-adjust the default threshold
