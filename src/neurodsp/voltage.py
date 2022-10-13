@@ -535,7 +535,7 @@ def rcoeff(x, y):
     return rcor
 
 
-def detect_bad_channels(raw, fs, similarity_threshold=(-0.5, 1), psd_hf_threshold=None):
+def detect_bad_channels(raw, fs, similarity_threshold=(-0.5, 1), psd_hf_threshold=None, scale_to_uv=1):
     """
     Bad channels detection for Neuropixel probes
     Labels channels
@@ -547,6 +547,8 @@ def detect_bad_channels(raw, fs, similarity_threshold=(-0.5, 1), psd_hf_threshol
     :param fs: sampling frequency
     :param similarity_threshold:
     :param psd_hf_threshold:
+    :param scale_to_uv: by default data is assumed to be uV. If not, supply conversion factor to uV so that
+                        pdf_threshold are scaled correctly.
     :return: labels (numpy vector [nc]), xfeats: dictionary of features [nc]
     """
 
@@ -574,7 +576,7 @@ def detect_bad_channels(raw, fs, similarity_threshold=(-0.5, 1), psd_hf_threshol
         """
         ntap = int(np.ceil(nmed / 2))
         extend = np.zeros(ntap) +  scipy.stats.trim_mean(x, 0.2)  # np.mean(x)
-        xf = np.r_[np.zeros(ntap) + np.median(x[:ntap]), x, np.zeros(ntap) + np.median(x[-ntap:])] # np.r_[np.flip(x[:ntap]), x, np.flip(x[-ntap:])]  # np.r_[extend, x, extend]
+        xf = np.r_[np.zeros(ntap) + np.median(x[:ntap]), x, np.zeros(ntap) + np.median(x[-ntap:])]  # np.r_[np.zeros(ntap) + x[0], x, np.zeros(ntap) + x[-1]]  # np.r_[np.zeros(ntap) + np.median(x[:ntap]), x, np.zeros(ntap) + np.median(x[-ntap:])] # np.r_[np.flip(x[:ntap]), x, np.flip(x[-ntap:])]  # np.r_[extend, x, extend]
         # assert np.all(xcorf[ntap:-ntap] == xcor)
         xf = scipy.signal.medfilt(xf, nmed)[ntap:-ntap]
 
@@ -609,19 +611,23 @@ def detect_bad_channels(raw, fs, similarity_threshold=(-0.5, 1), psd_hf_threshol
     nc, _ = raw.shape                                                                                   # get num channels
     raw = raw - np.mean(raw, axis=-1)[:, np.newaxis]  # removes DC offset                               # subtract mean of each channel ([:, np.newaxis] essentially np.at_least2d here)
     xcor = channels_similarity(raw)                                                                     #
-    fscale, psd = scipy.signal.welch(raw * 1e6, fs=fs)  # units; uV ** 2 / Hz
+    fscale, psd = scipy.signal.welch(raw * scale_to_uv, fs=fs)  # units; uV ** 2 / Hz
+
     if psd_hf_threshold is None:
         # the LFP band data is obviously much stronger so auto-adjust the default threshold
         psd_hf_threshold = 1.4 if fs < 5000 else 0.02
+
     sos_hp = scipy.signal.butter(**{'N': 3, 'Wn': 300 / fs * 2, 'btype': 'highpass'}, output='sos')
     hf = scipy.signal.sosfiltfilt(sos_hp, raw)
     xcorf = channels_similarity(hf)
 
+    nmed = np.max([11, int(nc /35)])  # TODO: must be odd. This is critical as too large and will overflow contigious blocks, too small and it will fill in odd-one-out blocks. 6 means it will work up to case of DXD but will output DDDDD for DDXDD (D = dead, X = okay) (so does 7)
+
     xfeats = ({
         'ind': np.arange(nc),
         'rms_raw': utils.rms(raw),  # very similar to the rms avfter butterworth filter
-        'xcor_hf': detrend(xcor, 11),
-        'xcor_lf': xcorf - detrend(xcorf, 11) - 1,
+        'xcor_hf': detrend(xcor, nmed),
+        'xcor_lf': xcorf - detrend(xcorf, 1) - 1,  # 1 or 3
         'psd_hf': np.mean(psd[:, fscale > (fs / 2 * 0.8)], axis=-1),  # 80% nyquists
     })
 
@@ -629,13 +635,18 @@ def detect_bad_channels(raw, fs, similarity_threshold=(-0.5, 1), psd_hf_threshol
     ichannels = np.zeros(nc)
     idead = np.where(similarity_threshold[0] > xfeats['xcor_hf'])[0]
     inoisy = np.where(np.logical_or(xfeats['psd_hf'] > psd_hf_threshold, xfeats['xcor_hf'] > similarity_threshold[1]))[0]
-    # the channels outside of the brains are the contiguous channels below the threshold on the trend coherency
 
-    ioutside = np.where(xfeats['xcor_lf'] < -0.75)[0]
-    if ioutside.size > 0 and ioutside[-1] == (nc - 1):
-        a = np.cumsum(np.r_[0, np.diff(ioutside) - 1])
-        ioutside = ioutside[a == np.max(a)]
-        ichannels[ioutside] = 3
+    # the channels outside of the brains are the contiguous channels below the threshold on the trend coherency
+    # extended to detect any contigious block of dead channels, with outside brain a special case
+    is_contigious = np.where(xfeats['xcor_lf'] < -0.75)[0]
+
+    if is_contigious.size > 0:
+        a = np.cumsum(np.r_[0, np.diff(is_contigious) - 1])  # TODO: understand ! 
+        is_contigious = is_contigious[a == np.max(a)]
+        if is_contigious[-1] == (nc - 1):
+            ichannels[is_contigious] = 3
+        else:
+            ichannels[is_contigious] = 1
 
     # indices
     ichannels[idead] = 1
